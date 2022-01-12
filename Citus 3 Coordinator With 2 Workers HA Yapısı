@@ -1,0 +1,192 @@
+CITUS
+​
+--select from table > coordiantor> select from table_100 select from table_101 data node 1 
+--1 shard= 1 postgresql table 
+--Coordinator – Stores Metadata. Node which application connects to.
+---Worker / Data nodes – Nodes which store data in form of shards.
+--Sharding – Process of dividing data among nodes.
+--Shards – A partition of the data containing a subset of rows.
+--sharding
+--açık kaynak
+--postgresql extension
+--distributed data ve sql desteği
+--distirbuted aggregate
+--distirbuted transactions
+--real time analytics
+--büyük tablo verilerinin belirli kriterlere göre (key) gore birden çok servise bölünmesidir
+​
+--executed on all nodes
+sudo yum install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+sudo yum install -y postgresql12-server
+sudo /usr/pgsql-12/bin/postgresql-12-setup initdb
+sudo systemctl enable postgresql-12
+sudo systemctl start postgresql-12
+--executed on all nodes
+curl https://install.citusdata.com/community/rpm.sh > add-citus-repo.sh
+sudo bash add-citus-repo.sh
+sudo yum install -y citus101_12
+--executed on all nodes
+echo "shared_preload_libraries = 'citus,pg_stat_statements'" | sudo tee -a /var/lib/pgsql/12/data/postgresql.conf 
+​
+​
+--You must add the Citus extension to every database you would like to use in a cluster. The following example adds the extension to the default database which is named postgres.
+sudo -i -u postgres psql -c "CREATE EXTENSION citus;"
+--on coordiantor
+SELECT citus_set_coordinator_host('192.168.49.4', 5432);
+sudo -i -u postgres psql -c "SELECT * from citus_add_node('192.168.49.3', 5432);"
+sudo -i -u postgres psql -c "SELECT * from citus_add_node('192.168.49.1', 5432);"
+​
+---Verify that installation has succeeded To verify that the installation has succeeded, we check that the coordinator node has picked up the desired worker configuration. This command when run in the psql shell should output the worker nodes we added to the pg_dist_node table above.
+sudo -i -u postgres psql -c "SELECT * FROM master_get_active_worker_nodes();"
+​
+postgres=# create database nzacitus ;
+CREATE DATABASE
+postgres=# CREATE EXTENSION citus;
+CREATE EXTENSION
+postgres=# \c nzacitus
+You are now connected to database "nzacitus" as user "postgres".
+nzacitus=# CREATE EXTENSION citus;
+CREATE EXTENSION
+​
+​
+​
+--Tüm node'larda pg_hba.conf dosyası düzelenir node'ların birbiri ile erişimi sağlanmas için >  vi /var/lib/pgsql/12/data/pg_hba.conf eğer eklenmez ise bu hatay alır ERROR:  connection to the remote node 192.168.49.3:5432 failed with the following error: fe_sendauth: no password supplied
+--host    all             all             192.168.49.0/24       trust
+​
+--coordinator nodeları üzerinde yapılır node ekleme işlemi. Coordinator master da yapılmıştır.
+postgres=#
+postgres=# SELECT citus_set_coordinator_host('192.168.49.4', 5432);
+ citus_set_coordinator_host
+----------------------------
+​
+(1 row)
+​
+postgres=# SELECT citus_add_node('192.168.49.4', 5432);
+ERROR:  connection to the remote node 192.168.49.3:5432 failed with the following error: fe_sendauth: no password supplied
+postgres=# \c nzacitus
+You are now connected to database "nzacitus" as user "postgres".
+nzacitus=# SELECT citus_set_coordinator_host('192.168.49.3', 5432);
+ citus_set_coordinator_host
+----------------------------
+​
+(1 row)
+nzacitus=# SELECT citus_add_node('192.168.49.1', 5432);
+ERROR:  connection to the remote node 192.168.49.3:5432 failed with the following error: fe_sendauth: no password supplied
+​
+nzacitus=# SELECT citus_add_node('192.168.49.3', 5432);
+ citus_add_node
+----------------
+              4
+(1 row)
+​
+nzacitus=# SELECT * FROM master_get_active_worker_nodes();
+  node_name   | node_port
+--------------+-----------
+ 192.168.49.3 |      5432
+(1 row)
+​
+postgres=# \c nzacitus
+You are now connected to database "nzacitus" as user "postgres".
+nzacitus=# SELECT citus_add_node('192.168.49.1', 5432);
+ citus_add_node
+----------------
+              5
+(1 row)
+​
+nzacitus=# SELECT * FROM master_get_active_worker_nodes();
+  node_name   | node_port
+--------------+-----------
+ 192.168.49.3 |      5432
+ 192.168.49.1 |      5432
+(2 rows)
+​
+​
+--distrubed tablo oluşturma on coordinator
+​
+nzacitus=# CREATE TABLE sample (id int primary key, data int);
+CREATE TABLE
+nzacitus=#  SELECT create_distributed_table('sample', 'id');
+ create_distributed_table
+--------------------------
+​
+(1 row)
+​
+nzacitus=# INSERT INTO sample SELECT GENERATE_SERIES(1, 10000), GENERATE_SERIES(1, 10000);
+INSERT 0 10000
+​
+nzacitus=# SELECT * FROM sample WHERE id < 8 ORDER BY id;
+ id | data
+----+------
+  1 |    1
+  2 |    2
+  3 |    3
+  4 |    4
+  5 |    5
+  6 |    6
+  7 |    7
+​
+nzacitus=# \dt
+         List of relations
+ Schema |  Name  | Type  |  Owner
+--------+--------+-------+----------
+ public | sample | table | postgres
+(1 row)
+​
+​
+​
+--worker üzerinde tablo
+postgres=# \c nzacitus
+You are now connected to database "nzacitus" as user "postgres".
+nzacitus=# \dt
+             List of relations
+ Schema |      Name      | Type  |  Owner
+--------+----------------+-------+----------
+ public | sample1_102041 | table | postgres
+ public | sample1_102043 | table | postgres
+​
+​
+​
+​
+--Coordinator failover olduğu zaman coordinator2 ye sorunsuz şekilde geciş yapmıştır. Coordinator 4 den Coordinator 4 e geciş olduğunda
+​
+nzacitus=# SELECT * FROM master_get_active_worker_nodes();
+  node_name   | node_port
+--------------+-----------
+ 192.168.49.3 |      5432
+ 192.168.49.1 |      5432
+(2 rows)
+​
+nzacitus=# \dt
+         List of relations
+ Schema |  Name  | Type  |  Owner
+--------+--------+-------+----------
+ public | sample | table | postgres
+(1 row)
+​
+nzacitus=# CREATE TABLE sample1 (id int primary key, data int);
+CREATE TABLE
+nzacitus=# SELECT create_distributed_table('sample1', 'id');
+ create_distributed_table
+--------------------------
+​
+(1 row)
+​
+nzacitus=# INSERT INTO sample SELECT GENERATE_SERIES(1, 10000), GENERATE_SERIES(1, 10000);
+ERROR:  duplicate key value violates unique constraint "sample_pkey_102022"
+DETAIL:  Key (id)=(37) already exists.
+nzacitus=# INSERT INTO sample1 SELECT GENERATE_SERIES(1, 10000), GENERATE_SERIES(1, 10000);
+INSERT 0 10000
+nzacitus=# SELECT * FROM master_get_active_worker_nodes();
+  node_name   | node_port
+--------------+-----------
+ 192.168.49.3 |      5432
+ 192.168.49.1 |      5432
+(2 rows)
+​
+nzacitus=# \dt
+          List of relations
+ Schema |  Name   | Type  |  Owner
+--------+---------+-------+----------
+ public | sample  | table | postgres
+ public | sample1 | table | postgres
+(2 rows)
